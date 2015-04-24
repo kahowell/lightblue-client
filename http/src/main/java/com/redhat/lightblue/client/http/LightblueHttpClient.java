@@ -1,5 +1,6 @@
 package com.redhat.lightblue.client.http;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.nio.file.Paths;
 import java.util.Date;
@@ -28,8 +29,9 @@ import com.redhat.lightblue.client.response.LightblueResponse;
 import com.redhat.lightblue.client.response.LightblueResponseParseException;
 import com.redhat.lightblue.client.util.JSON;
 
-public class LightblueHttpClient implements LightblueClient {
+public class LightblueHttpClient implements LightblueClient, Closeable {
     private final LightblueClientConfiguration configuration;
+    private final CloseableHttpClient httpClient;
     private final ObjectMapper mapper;
 
     private static final Logger LOGGER = LoggerFactory.getLogger(LightblueHttpClient.class);
@@ -79,6 +81,7 @@ public class LightblueHttpClient implements LightblueClient {
         // config object from affecting this client after instantiation.
         this.configuration = new LightblueClientConfiguration(configuration);
         this.mapper = mapper;
+        this.httpClient = getLightblueHttpClient();
     }
 
     /**
@@ -96,6 +99,7 @@ public class LightblueHttpClient implements LightblueClient {
         configuration.setUseCertAuth(useCertAuth);
 
         this.mapper = JSON.getDefaultObjectMapper();
+        this.httpClient = getLightblueHttpClient();
     }
 
     /*
@@ -140,34 +144,37 @@ public class LightblueHttpClient implements LightblueClient {
         }
     }
 
+    @Override
+    public void close() throws IOException {
+        httpClient.close();
+    }
+
     protected LightblueResponse callService(HttpRequestBase httpOperation) {
         String jsonOut;
 
         LOGGER.debug("Calling " + httpOperation);
         try {
-            try (CloseableHttpClient httpClient = getLightblueHttpClient()) {
-                httpOperation.setHeader("Content-Type", "application/json");
+            httpOperation.setHeader("Content-Type", "application/json");
 
+            if (LOGGER.isDebugEnabled()) {
+                try {
+                    LOGGER.debug("Request body: " + (EntityUtils.toString(((HttpEntityEnclosingRequestBase) httpOperation).getEntity())));
+                } catch (ClassCastException e) {
+                    LOGGER.debug("Request body: None");
+                }
+            }
+
+            long t1 = new Date().getTime();
+            try (CloseableHttpResponse httpResponse = httpClient.execute(httpOperation)) {
+                HttpEntity entity = httpResponse.getEntity();
+                jsonOut = EntityUtils.toString(entity);
                 if (LOGGER.isDebugEnabled()) {
-                    try {
-                        LOGGER.debug("Request body: " + (EntityUtils.toString(((HttpEntityEnclosingRequestBase) httpOperation).getEntity())));
-                    } catch (ClassCastException e) {
-                        LOGGER.debug("Request body: None");
-                    }
-                }
+                    LOGGER.debug("Response received from service: " + jsonOut);
 
-                long t1 = new Date().getTime();
-                try (CloseableHttpResponse httpResponse = httpClient.execute(httpOperation)) {
-                    HttpEntity entity = httpResponse.getEntity();
-                    jsonOut = EntityUtils.toString(entity);
-                    if (LOGGER.isDebugEnabled()) {
-                        LOGGER.debug("Response received from service: " + jsonOut);
-
-                        long t2 = new Date().getTime();
-                        LOGGER.debug("Call took "+(t2-t1)+"ms");
-                    }
-                    return new LightblueResponse(jsonOut, mapper);
+                    long t2 = new Date().getTime();
+                    LOGGER.debug("Call took "+(t2-t1)+"ms");
                 }
+                return new LightblueResponse(jsonOut, mapper);
             }
         } catch (IOException e) {
             LOGGER.error("There was a problem calling the lightblue service", e);
